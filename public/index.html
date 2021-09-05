@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<title>Pyodide Quake Terminal</title>
+	<link rel="stylesheet" type="text/css" href="https://unpkg.com/jquery.terminal/css/jquery.terminal.min.css"/>
+	<style>
+		body {font-family: Verdana,serif;}
+		.terminal { --size: 1.5; }
+		.terminal { padding: 4px 8px; }
+		.cmd { margin-bottom: 4px !important; }
+	</style>
+	<script src="https://cdn.jsdelivr.net/npm/@shinsenter/defer.js@2.4.2/dist/defer.min.js"></script>
+</head>
+<body>
+<div id="tilda"></div>
+<div>
+	Press the '~' once Pyodide has loaded.
+</div>
+<script defer>
+
+	function sleep(s) {
+		return new Promise(resolve => setTimeout(resolve, s));
+	}
+
+	async function main() {
+		await loadPyodide({ indexURL : 'https://cdn.jsdelivr.net/pyodide/v0.17.0/full/' });
+		let namespace = pyodide.globals.get("dict")();
+		pyodide.runPython(`
+			import sys
+			import js
+			from pyodide import console
+			import __main__
+
+			class PyConsole(console._InteractiveConsole):
+				def __init__(self):
+					super().__init__(
+						__main__.__dict__,
+						persistent_stream_redirection=False,
+					)
+
+				def banner(self):
+					return f"Welcome to the Pyodide terminal emulator 🐍\\n{super().banner()}"
+
+
+			js.pyconsole = PyConsole()
+		`, namespace);
+		namespace.destroy();
+
+		let ps1 = '>>> ', ps2 = '... ';
+
+		async function lock() {
+			let resolve;
+			let ready = term.ready;
+			term.ready = new Promise(res => resolve = res);
+			await ready;
+			return resolve;
+		}
+
+		async function interpreter(command) {
+			let unlock = await lock();
+			try {
+				term.pause();
+
+				// multiline should be splitted (useful when pasting)
+				for (const c of command.split('\n')) {
+					let run_complete = pyconsole.run_complete;
+					try {
+						const incomplete = pyconsole.push(c);
+						term.set_prompt(incomplete ? ps2 : ps1);
+						let r = await run_complete;
+						if(pyodide.isPyProxy(r)){
+							r.destroy();
+						}
+					} catch(e){
+						if(e.name !== "PythonError"){
+							term.error(e);
+							throw e;
+						}
+					}
+					run_complete.destroy();
+				}
+			} finally {
+				term.resume();
+				await sleep(10);
+				unlock();
+			}
+		}
+
+		let body = $('body');
+		let elem = $('#tilda');
+
+		if (body.data('tilda')) {
+			return body.data('tilda').terminal;
+		}
+
+		elem.addClass('tilda');
+
+		let settings = {
+			prompt: ps1,
+			name: 'tilda',
+			height: 254,
+			enabled: false,
+			greetings: pyconsole.banner(),
+			completionEscape: false,
+			completion: function(command, callback) {
+				callback(pyconsole.complete(command).toJs()[0]);
+			},
+			keypress: function(e) {
+				if (e.which === 96) {
+					return false;
+				}
+			}
+		};
+
+		elem.append('<div class="td"></div>');
+
+		let term = elem.terminal = elem.find('.td').terminal(interpreter, settings);
+
+		window.term = term;
+
+		pyconsole.stdout_callback = s => term.echo(s, {newline : false});
+		pyconsole.stderr_callback = s => {
+			term.error(s.trimEnd());
+		}
+
+		term.ready = Promise.resolve();
+
+		pyodide._module.on_fatal = async (e) => {
+			term.error("Pyodide has suffered a fatal error. Please report this to the Pyodide maintainers.");
+			term.error("The cause of the fatal error was:");
+			term.error(e);
+			term.error("Look in the browser console for more details.");
+			await term.ready;
+			term.pause();
+			await sleep(15);
+			term.pause();
+		};
+
+		let focus = false;
+
+		$(document.documentElement).keypress(function(e) {
+			if (e.which === 96) {
+				elem.slideToggle('fast');
+				elem.terminal.focus(focus = !focus);
+				elem.terminal.attr({
+					scrollTop: elem.terminal.attr("scrollHeight")
+				});
+			}
+		});
+
+		body.data('tilda', elem);
+		elem.hide();
+	}
+
+	function loadJS(url, implementationCode) {
+		let scriptTag = document.createElement('script');
+		scriptTag.src = url;
+		scriptTag.onload = implementationCode;
+		scriptTag.onreadystatechange = implementationCode;
+		document.body.appendChild(scriptTag);
+	}
+
+	Defer(() => {
+		let console_ready = () => window.console_ready = main();
+		let load5 = () => loadJS('https://cdn.jsdelivr.net/pyodide/v0.17.0/full/pyodide.js', console_ready);
+		let load4 = () => loadJS('https://unpkg.com/js-polyfills/keyboard.js', load5);
+		let load3 = () => loadJS('https://unpkg.com/jquery.terminal/js/jquery.terminal.min.js', load4);
+		let load2 = () => loadJS('https://unpkg.com/jquery.terminal/js/jquery.mousewheel-min.js', load3);
+		loadJS('https://code.jquery.com/jquery-1.7.2.min.js', load2);
+	});
+
+</script>
+</body>
+</html>
