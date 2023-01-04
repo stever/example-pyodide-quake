@@ -1,1 +1,0 @@
-# Pyodide Quake Terminal Example
